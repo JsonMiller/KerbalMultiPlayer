@@ -458,10 +458,13 @@ namespace KMP
 		
 		private void kickToTrackingStation()
 		{
-			KMPClientMain.DebugLog("Selected unavailable vessel, switching");
-			ScreenMessages.PostScreenMessage("Selected vessel is occupied or private...", 5f,ScreenMessageStyle.UPPER_RIGHT);
-			syncing = true;
-			StartCoroutine(returnToTrackingStation());
+			if (!syncing)
+			{
+				KMPClientMain.DebugLog("Selected unavailable vessel, switching");
+				ScreenMessages.PostScreenMessage("Selected vessel is occupied or private...", 5f,ScreenMessageStyle.UPPER_RIGHT);
+				syncing = true;
+				StartCoroutine(returnToTrackingStation());
+			}
 		}
 		
 		private void writeUpdates()
@@ -2812,24 +2815,27 @@ namespace KMP
 			
 			if (!KMPConnectionDisplay.windowEnabled && KMPClientMain.handshakeCompleted && KMPClientMain.tcpSocket != null)
 			{
-				KMPInfoDisplay.infoWindowPos = GUILayout.Window(
-					999999,
-					KMPInfoDisplay.infoWindowPos,
-					infoDisplayWindow,
-					KMPInfoDisplay.infoDisplayMinimized ? "KMP" : "KerbalMP v"+KMPCommon.PROGRAM_VERSION+" ("+KMPGlobalSettings.instance.guiToggleKey+")",
-					KMPInfoDisplay.layoutOptions
-					);
-				
-				if (isInFlight && !syncing && !KMPInfoDisplay.infoDisplayMinimized)
+				if(KMPInfoDisplay.infoDisplayActive)
 				{
-					GUILayout.Window(
-						999996,
-						KMPVesselLockDisplay.windowPos,
-						lockWindow,
-						"Lock",
-						KMPVesselLockDisplay.layoutOptions
+					KMPInfoDisplay.infoWindowPos = GUILayout.Window(
+						999999,
+						KMPInfoDisplay.infoWindowPos,
+						infoDisplayWindow,
+						KMPInfoDisplay.infoDisplayMinimized ? "KMP" : "KerbalMP v"+KMPCommon.PROGRAM_VERSION+" ("+KMPGlobalSettings.instance.guiToggleKey+")",
+						KMPInfoDisplay.layoutOptions
 						);
-				}
+					
+					if (isInFlight && !syncing && !KMPInfoDisplay.infoDisplayMinimized)
+					{
+						GUILayout.Window(
+							999996,
+							KMPVesselLockDisplay.windowPos,
+							lockWindow,
+							"Lock",
+							KMPVesselLockDisplay.layoutOptions
+							);
+					}
+				}	
 			}
 
 			

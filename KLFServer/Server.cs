@@ -75,6 +75,7 @@ namespace KMPServer
 
 		public SynchronizedCollection<ServerClient> clients;
 		public SynchronizedCollection<ServerClient> flight_clients;
+		public SynchronizedCollection<ServerClient> cleanupClients;
 		public ConcurrentQueue<ClientMessage> clientMessageQueue;
 		
 		public int clientIndex = 0;
@@ -300,7 +301,7 @@ namespace KMPServer
 
 			clients = new SynchronizedCollection<ServerClient>(settings.maxClients);
 			flight_clients = new SynchronizedCollection<ServerClient>(settings.maxClients);
-
+			cleanupClients = new SynchronizedCollection<ServerClient>(settings.maxClients);
 			clientMessageQueue = new ConcurrentQueue<ClientMessage>();
 
 			listenThread = new Thread(new ThreadStart(listenForClients));
@@ -332,8 +333,9 @@ namespace KMPServer
             Log.Info("/ban <username> - Permanently ban player <username> and any known aliases");
             Log.Info("/register <username> <token> - Add new roster entry for player <username> with authentication token <token> (BEWARE: will delete any matching roster entries)");
             Log.Info("/update <username> <token> - Update existing roster entry for player <username>/token <token> (one param must match existing roster entry, other will be updated)");
-            Log.Info("/unregister <username/token> - Temove any player that has a matching username or token from the roster");
+            Log.Info("/unregister <username/token> - Remove any player that has a matching username or token from the roster");
             Log.Info("/save - Backup universe");
+            Log.Info("/help - Displays all commands in the server");
             Log.Info("Non-commands will be sent to players as a chat message");
 
 			commandThread.Start();
@@ -429,8 +431,7 @@ namespace KMPServer
 
                                 if (clientToDisconnect != null)
                                 {
-                                    disconnectClient(clientToDisconnect, "You were kicked from the server.");
-									postDisconnectCleanup(clientToDisconnect);
+                                    markClientForDisconnect(clientToDisconnect, "You were kicked from the server.");
                                 }
 							}
 							else if (input == "/list")
@@ -471,8 +472,7 @@ namespace KMPServer
 
                                 if (userToBan != null)
                                 {
-                                    disconnectClient(userToBan, "You were banned from the server!");
-									postDisconnectCleanup(userToBan);
+                                    markClientForDisconnect(userToBan, "You were banned from the server!");
                                     guid = userToBan.guid;
                                 }
 
@@ -569,8 +569,10 @@ namespace KMPServer
 								else
 								{
                                     Log.Info("Could not parse update command. Format is \"/update <username> <token>\"");
-								}
-							}
+                                }
+                            }
+                            else if (input == "/help")
+                                displayCommands();
 						}
 						else
 						{
@@ -618,10 +620,11 @@ namespace KMPServer
 						client = null;
 						error_message = e.ToString();
 					}
-
+					
 					if (client != null && client.Connected)
 					{
 						//Try to add the client
+						client.NoDelay = true;
 						ServerClient cl = addClient(client);
 						if (cl != null)
 						{
@@ -713,8 +716,7 @@ namespace KMPServer
                             || (!handshook && (currentMillisecond - connection_start_time) > CLIENT_HANDSHAKE_TIMEOUT_DELAY))
                         {
                             //Disconnect the client
-                            disconnectClient(client, "Timeout");
-							postDisconnectCleanup(client);
+                            markClientForDisconnect(client);
                         }
                         else
                         {
@@ -746,13 +748,15 @@ namespace KMPServer
                     }
 					
 					List<ServerClient> disconnectedClients = new List<ServerClient>();
-					foreach (var client in clients.ToList().Where(c => !c.isValid))
+					List<ServerClient> markedClients = cleanupClients.ToList();
+					cleanupClients.Clear();
+					foreach (var client in clients.ToList().Where(c => !c.isValid || markedClients.Contains(c)))
                     {
                         //Client is disconnected but slot has not been cleaned up
-                        disconnectClient(client, "Connection lost");
+                        disconnectClient(client, (String.IsNullOrEmpty(client.disconnectMessage)) ? "Connection lost" : client.disconnectMessage);
 						disconnectedClients.Add(client);
                     }
-					foreach (var client in disconnectedClients)
+					foreach (var client in disconnectedClients.ToList())
 					{
 						//Perform final cleanup afterward to prevent an InvalidOperationError
 						postDisconnectCleanup(client);
@@ -893,7 +897,7 @@ namespace KMPServer
 
 				Log.Info("Internal error during disconnect: " + e.StackTrace);
 			}
-            catch (InvalidOperationException e)
+            catch (InvalidOperationException)
             {
                 cl.tcpClient = null;             
             }
@@ -907,6 +911,16 @@ namespace KMPServer
 				sendServerSettingsToAll();
 			
 			cl.disconnected();
+		}
+		
+		public void markClientForDisconnect(ServerClient client, string message = "Connection Lost")
+		{
+			if (clients.Contains(client))
+			{
+				Log.Debug("Client " + client.username + " added to disconnect list");
+				client.disconnectMessage = message;
+				cleanupClients.Add(client);
+			}
 		}
 		
 		public void postDisconnectCleanup(ServerClient client)
@@ -1066,6 +1080,12 @@ namespace KMPServer
 				response_builder.Append(settings.saveScreenshots);
 				response_builder.Append('\n');
 
+                response_builder.Append("Whitelisted: ");
+                response_builder.Append(settings.whitelisted);
+                response_builder.Append('\n');
+
+                
+
 				//Send response
 				byte[] buffer = System.Text.Encoding.UTF8.GetBytes(response_builder.ToString());
 				response.ContentLength64 = buffer.LongLength;
@@ -1132,8 +1152,7 @@ namespace KMPServer
                         //Ensure no other players have the same username.
                         if (clients.Any(c => c.isReady && c.username.ToLower() == username_lower))
                         {
-                            disconnectClient(cl, "Your username is already in use.");
-							postDisconnectCleanup(cl);
+                            markClientForDisconnect(cl, "Your username is already in use.");
 							Log.Info("Rejected client due to duplicate username: " + username);
 							accepted = false;
                         }
@@ -1141,8 +1160,7 @@ namespace KMPServer
                         //If whitelisting is enabled and the user is *not* on the list:
                         if (settings.whitelisted && settings.whitelist.Contains(username, StringComparer.InvariantCultureIgnoreCase) == false)
                         {
-                            disconnectClient(cl, "You are not on this servers whitelist.");
-							postDisconnectCleanup(cl);
+                            markClientForDisconnect(cl, "You are not on this servers whitelist.");
                             Log.Info("Rejected client due to not being on the whitelist: " + username);
                             accepted = false;
                         }
@@ -1161,8 +1179,7 @@ namespace KMPServer
 						if (name_taken > 0)
 						{
 							//Disconnect the player
-							disconnectClient(cl, "Your username is already claimed by an existing user.");
-							postDisconnectCleanup(cl);
+							markClientForDisconnect(cl, "Your username is already claimed by an existing user.");
 							Log.Info("Rejected client due to duplicate username w/o matching guid: " + username);
 							break;
 						}
@@ -1333,8 +1350,7 @@ namespace KMPServer
 					if (data != null)
 						message = encoder.GetString(data, 0, data.Length); //Decode the message
 
-					disconnectClient(cl, message); //Disconnect the client
-					postDisconnectCleanup(cl);
+					markClientForDisconnect(cl, message); //Disconnect the client
 					break;
 
 				case KMPCommon.ClientMessageID.SHARE_CRAFT_FILE:
@@ -1380,7 +1396,7 @@ namespace KMPServer
 
 							Log.Info(sb.ToString());
 			
-							sb.Append(" . Enter " + GET_CRAFT_COMMAND + " ");
+							sb.Append(" . Enter !getcraft ");
 							sb.Append(cl.username);
 							sb.Append(" to get it.");
 							sendTextMessageToAll(sb.ToString());
@@ -1457,8 +1473,7 @@ namespace KMPServer
 									Log.Debug("Sending time-sync to " + cl.username + " current offset " + cl.syncOffset);
 									if (cl.lagWarning > 5000)
 									{
-										disconnectClient(cl,"Your game was running too slowly compared to other players. Please try reconnecting in a moment.");
-										postDisconnectCleanup(cl);
+										markClientForDisconnect(cl,"Your game was running too slowly compared to other players. Please try reconnecting in a moment.");
 									}
 									else cl.lagWarning++;
 								}
@@ -1721,39 +1736,51 @@ namespace KMPServer
 				}
 				else if (message_lower == "!quit")
 				{
-					disconnectClient(cl, "Requested quit");
-					postDisconnectCleanup(cl);
+					markClientForDisconnect(cl, "Requested quit");
 					return;
 				}
-				else if (message_lower.Length > (KMPCommon.GET_CRAFT_COMMAND.Length + 1)
-					&& message_lower.Substring(0, KMPCommon.GET_CRAFT_COMMAND.Length) == KMPCommon.GET_CRAFT_COMMAND)
-				{
-					String player_name = message_lower.Substring(KMPCommon.GET_CRAFT_COMMAND.Length + 1);
+                else if (message_lower == "!help")
+                {
+                    sb.Append("Available Server Commands:\n");
+                    sb.Append("!help - Displays this message\n");
+                    sb.Append("!list - View all connected players\n");
+                    sb.Append("!quit - Leaves the server\n");
+                    sb.Append("!getcraft <playername> - Gets the most recent craft shared by the specified player\n");
+                    sb.Append("\n");
+                    
+                    sendTextMessage(cl, sb.ToString());
 
-					//Find the player with the given name
-					ServerClient target_client = getClientByName(player_name);
+                    return;
+                }
+                else if (message_lower.Length > (KMPCommon.GET_CRAFT_COMMAND.Length + 1)
+                    && message_lower.Substring(0, KMPCommon.GET_CRAFT_COMMAND.Length) == KMPCommon.GET_CRAFT_COMMAND)
+                {
+                    String player_name = message_lower.Substring(KMPCommon.GET_CRAFT_COMMAND.Length + 1);
 
-					if (target_client.isReady)
-					{
-						//Send the client the craft data
-						lock (target_client.sharedCraftLock)
-						{
-							if (target_client.sharedCraftName.Length > 0
-								&& target_client.sharedCraftFile != null && target_client.sharedCraftFile.Length > 0)
-							{
-								sendCraftFile(cl,
-									target_client.sharedCraftName,
-									target_client.sharedCraftFile,
-									target_client.sharedCraftType);
+                    //Find the player with the given name
+                    ServerClient target_client = getClientByName(player_name);
 
-								Log.Info("Sent craft " + target_client.sharedCraftName
-									+ " to client " + cl.username);
-							}
-						}
-					}
-					
-					return;
-				}
+                    if (target_client.isReady)
+                    {
+                        //Send the client the craft data
+                        lock (target_client.sharedCraftLock)
+                        {
+                            if (target_client.sharedCraftName.Length > 0
+                                && target_client.sharedCraftFile != null && target_client.sharedCraftFile.Length > 0)
+                            {
+                                sendCraftFile(cl,
+                                    target_client.sharedCraftName,
+                                    target_client.sharedCraftFile,
+                                    target_client.sharedCraftType);
+
+                                Log.Info("Sent craft " + target_client.sharedCraftName
+                                    + " to client " + cl.username);
+                            }
+                        }
+                    }
+
+                    return;
+                }
 			}
 
 			//Compile full message
@@ -2526,5 +2553,24 @@ namespace KMPServer
 	           return Regex.Replace(strIn, @"[\r\n\x00\x1a\\'""]", ""); 
 	        } catch { return String.Empty; }
 		}
+
+        private void displayCommands()
+        {
+            Log.Info("Commands:");
+            Log.Info("/quit - Quit server cleanly");
+            Log.Info("/stop - Stop hosting server");
+            Log.Info("/list - List players");
+            Log.Info("/count - Display player counts");
+            Log.Info("/kick <username> - Kick player <username>");
+            Log.Info("/ban <username> - Permanently ban player <username> and any known aliases");
+            Log.Info("/register <username> <token> - Add new roster entry for player <username> with authentication token <token> (BEWARE: will delete any matching roster entries)");
+            Log.Info("/update <username> <token> - Update existing roster entry for player <username>/token <token> (one param must match existing roster entry, other will be updated)");
+            Log.Info("/unregister <username/token> - Temove any player that has a matching username or token from the roster");
+            Log.Info("/save - Backup universe");
+            Log.Info("/help - Displays all commands in the server");
+            Log.Info("Non-commands will be sent to players as a chat message");
+
+            // to add a new command to the command list just copy the Log.Info method and add how to use that command.
+        }
 	}
 }
