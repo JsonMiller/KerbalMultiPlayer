@@ -22,6 +22,7 @@ namespace KMPServer
 
 		public const int SEND_BUFFER_SIZE = 8192;
         public const int POLL_INTERVAL = 10000;
+	    private const int MAX_REC_MESSAGE_SIZE = 1024;
 
 		//Properties
 
@@ -289,6 +290,8 @@ namespace KMPServer
 							currentMessageID = KMPCommon.ClientMessageID.NULL;
 						
 						int data_length = KMPCommon.intFromBytes(currentMessageHeader, 4);
+
+					    data_length = Math.Max(data_length, MAX_REC_MESSAGE_SIZE);
 
 						if (data_length > 0)
 						{
