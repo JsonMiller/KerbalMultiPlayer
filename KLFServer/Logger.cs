@@ -9,7 +9,7 @@ namespace KMPServer
     public static class Log
     {
         private static string LogFilename = "KMPServer.log";
-
+        
         public enum LogLevels : int
         {
             Debug = 0,
@@ -32,7 +32,7 @@ namespace KMPServer
                 Console.WriteLine(Line);
                 try
                 {
-                    File.AppendAllText(LogFilename, Line + "\n");
+                    File.AppendAllText(LogFilename, Line + Environment.NewLine);
                 }
                 catch { } //What do we do about this?
             }
